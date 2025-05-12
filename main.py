@@ -283,4 +283,6 @@ def keep_alive():
     t = threading.Thread(target=run)
     t.start()
 
+keep_alive()
+
 bot.run(os.environ['DISCORD_TOKEN'])
