@@ -6,8 +6,6 @@ from discord.ext import commands, tasks
 from datetime import datetime, timedelta
 import os
 import json
-from threading import thread
-
 
 intents = discord.Intents.default()
 intents.message_content = True
