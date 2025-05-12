@@ -4,6 +4,8 @@ import math
 import re
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta
+from flask import Flask
+import threading
 import os
 import json
 
@@ -268,6 +270,17 @@ async def help(ctx):
     await ctx.send(embed=embed)
 
 # Keep Alive
+app = Flask('')
 
+@app.route('/')
+def home():
+    return 'Bot is running!'
+
+def run():
+    app.run(host='0.0.0.0', port=8080)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
 
 bot.run(os.environ['DISCORD_TOKEN'])
