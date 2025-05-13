@@ -249,64 +249,70 @@ async def convert(ctx, *, input: str):
         await ctx.send("❌ Please include a valid currency format like `taka`, `tk`, `bdt`, `robux`, `rbx`, `r$`.")
 
 @bot.command()
-@commands.cooldown(1, 15, commands.BucketType.user) 
+@commands.cooldown(1, 10, commands.BucketType.user)
 async def check(ctx, username: str):
     username = username.strip()
-
-    # Show loading message
     loading = await ctx.send(f"⏳ Checking payout status for **{username}**...")
 
     try:
-        # Delay for user experience
         await asyncio.sleep(1)
 
-        # Step 1: Get user ID
         user = await roblox.get_user_by_username(username)
         user_id = user.id
+        proper_username = user.name
+        profile_link = f"https://www.roblox.com/users/{user_id}/profile"
+        markdown_user = f"[{proper_username}]({profile_link})"
 
-        # Step 2: Call payout eligibility API
-        url = f"https://economy.roblox.com/v1/groups/{GROUP_ID}/users-payout-eligibility?userIds={user_id}"
-        headers = {
-            "Cookie": f".ROBLOSECURITY={os.environ['ROBLOX_TOKEN']}"
-        }
+        thumbnail_url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
 
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
+            # Step 3: Get payout eligibility
+            payout_url = f"https://economy.roblox.com/v1/groups/{GROUP_ID}/users-payout-eligibility?userIds={user_id}"
+            headers = {
+                "Cookie": f".ROBLOSECURITY={os.environ['ROBLOX_TOKEN']}"
+            }
+            async with session.get(payout_url, headers=headers) as resp:
                 data = await resp.json()
                 status = data["usersGroupPayoutEligibility"].get(str(user_id), "Unknown")
 
-        # Step 3: Format result
+            # Step 4: Get avatar image URL
+            async with session.get(thumbnail_url) as thumb_resp:
+                thumb_data = await thumb_resp.json()
+                user_avatar_url = thumb_data["data"][0]["imageUrl"]
+
+        # Step 5: Create response embed
         if status == "Eligible":
             embed = discord.Embed(
                 title="✅ Payout Status",
-                description=f"**{username}** is **eligible** for group payouts!\n🎉 Head over to https://discord.com/channels/1334140159012241410/1334535165187326053 to make a purchase",
+                description=f"**{markdown_user}** is **eligible** for group payouts!\n🎉 Head over to https://discord.com/channels/1334140159012241410/1334535165187326053 to make a purchase",
                 color=discord.Color.green()
             )
         elif status == "PayoutRestricted":
             embed = discord.Embed(
                 title="⚠️ Payout Status",
-                description=f"**{username}** is in the group but is **payout restricted**.\nUser hasn't passed 14 days since join.",
+                description=f"**{markdown_user}** is in the group but is **payout restricted**.\nUser hasn't passed 14 days since join.",
                 color=discord.Color.orange()
             )
         elif status == "NotInGroup":
             embed = discord.Embed(
                 title="❌ Payout Status",
-                description=f"**{username}** is **not in the group**.\nClick [here](https://www.roblox.com/communities/35455005/dont-read-the-groups-description#!/about) to join the group!",
+                description=f"**{markdown_user}** is **not in the group**.\nClick [here](https://www.roblox.com/communities/35455005/dont-read-the-groups-description#!/about) to join the group!",
                 color=discord.Color.red()
             )
         else:
             embed = discord.Embed(
                 title="❓ Payout Status",
-                description=f"Could not determine payout status for **{username}**.",
+                description=f"Could not determine payout status for **{markdown_user}**.",
                 color=discord.Color.dark_gray()
             )
 
+        embed.set_thumbnail(url=user_avatar_url)
         await loading.edit(content=None, embed=embed)
 
     except Exception as e:
         error_embed = discord.Embed(
             title="❌ Error",
-            description=f"An error occurred while checking **{username}**:\n`{e}`",
+            description=f"An error occurred while checking **{username.title()}**:\n`{e}`",
             color=discord.Color.red()
         )
         await loading.edit(content=None, embed=error_embed)
