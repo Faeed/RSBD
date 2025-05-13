@@ -9,10 +9,15 @@ from flask import Flask
 import threading
 import os
 import json
+from roblox import Client
+import aiohttp
 
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True  # For welcome messages
+
+roblox = Client(os.environ['ROBLOX_TOKEN'])  # Secure this in production!
+GROUP_ID = 35455005 
 
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
 user_reminders = {}
@@ -22,6 +27,20 @@ restricted_channels = [1334140159641255981, 1370660850712580106]
 
 # File path for persistence
 REMINDERS_FILE = 'reminders.json'
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandOnCooldown):
+        try:
+            await ctx.message.delete()
+            msg = await ctx.send(f"🕒 You're on cooldown! Try again in **{round(error.retry_after, 1)} seconds**.")
+            await asyncio.sleep(3)
+            await msg.delete()
+
+        except discord.Forbidden:
+            pass
+    else:
+        raise error  # Let other errors bubble up if not handled
 
 def load_reminders():
     global user_reminders
@@ -169,7 +188,7 @@ async def convert(ctx, *, input: str):
         await ctx.send("❌ This command cannot be used in this channel.")
         return
 
-    input = input.lower().replace(" ", "")
+    input = input.lower().replace(" ", "").replace(",", "")
     amount_match = re.search(r'(\d+)', input)
 
     if not amount_match:
@@ -178,49 +197,119 @@ async def convert(ctx, *, input: str):
 
     amount = int(amount_match.group(1))
 
+    packages = {110: 99, 225: 199, 335: 299, 450: 399, 650: 499}
+    robux_values = sorted(packages)
+    taka_values = sorted(packages.values())
+
     if any(x in input for x in ['tk', 'bdt', 'taka']):
-        if amount < 499:
-            if amount < 99:
-                await ctx.send("❌ The minimum amount you can buy with is **99tk**, which gives **110 Robux**.")
-            elif amount < 199:
-                await ctx.send("You can buy the **110 Robux for 99tk** package.")
-            elif amount < 299:
-                await ctx.send("You can buy one of the following packages:\n- **110 Robux for 99tk**\n- **225 Robux for 199tk**")
-            elif amount < 399:
-                await ctx.send("You can buy one of the following packages:\n- **225 Robux for 199tk**\n- **335 Robux for 299tk**")
-            else:
-                await ctx.send("You can buy one of the following packages:\n- **450 Robux for 399tk**\n- **650 Robux for 499tk**")
+        if amount < taka_values[0]:
+            await ctx.send(f"❌ The minimum amount you can buy with is **{taka_values[0]}tk**, which gives **{robux_values[0]} Robux**.")
+        elif amount < taka_values[-1]:
+            lower = None
+            upper = None
+            for robux, price in packages.items():
+                if price <= amount:
+                    lower = (robux, price)
+                elif price > amount and upper is None:
+                    upper = (robux, price)
+
+            message = ["You can buy one of the following packages:"]
+            if lower:
+                message.append(f"- **{lower[0]} Robux for {lower[1]}tk**")
+            if upper:
+                message.append(f"- **{upper[0]} Robux for {upper[1]}tk**")
+
+            await ctx.send("\n".join(message))
         else:
             robux = math.ceil(amount * 1.3)
             await ctx.send(f"You will get **{robux} Robux** for {amount}tk.")
 
     elif any(x in input for x in ['rbx', 'robux', 'r$', 'rs', 'roblox', 'rb']):
-        packages = {110: 99, 225: 199, 335: 299, 450: 399, 650: 499}
-        sorted_robux = sorted(packages)
-
-        if amount < 650:
-            # Find closest lower and upper package
+        if amount < robux_values[-1]:
             lower = None
             upper = None
-            for r in sorted_robux:
-                if r < amount:
+            for r in robux_values:
+                if r <= amount:
                     lower = r
-                elif r >= amount and upper is None:
+                elif r > amount and upper is None:
                     upper = r
 
-            package_lines = ["You can buy one of the following packages:"]
+            message = ["You can buy one of the following packages:"]
             if lower:
-                package_lines.append(f"- **{lower} Robux for {packages[lower]}tk**")
+                message.append(f"- **{lower} Robux for {packages[lower]}tk**")
             if upper:
-                package_lines.append(f"- **{upper} Robux for {packages[upper]}tk**")
+                message.append(f"- **{upper} Robux for {packages[upper]}tk**")
 
-            await ctx.send("\n".join(package_lines))
+            await ctx.send("\n".join(message))
         else:
             taka = math.ceil(amount / 1.3)
             await ctx.send(f"{amount} Robux will cost you **{taka}tk**.")
 
     else:
         await ctx.send("❌ Please include a valid currency format like `taka`, `tk`, `bdt`, `robux`, `rbx`, `r$`.")
+
+@bot.command()
+@commands.cooldown(1, 15, commands.BucketType.user) 
+async def check(ctx, username: str):
+    username = username.strip()
+
+    # Show loading message
+    loading = await ctx.send(f"⏳ Checking payout status for **{username}**...")
+
+    try:
+        # Delay for user experience
+        await asyncio.sleep(1)
+
+        # Step 1: Get user ID
+        user = await roblox.get_user_by_username(username)
+        user_id = user.id
+
+        # Step 2: Call payout eligibility API
+        url = f"https://economy.roblox.com/v1/groups/{GROUP_ID}/users-payout-eligibility?userIds={user_id}"
+        headers = {
+            "Cookie": f".ROBLOSECURITY={os.environ['ROBLOX_TOKEN']}"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=headers) as resp:
+                data = await resp.json()
+                status = data["usersGroupPayoutEligibility"].get(str(user_id), "Unknown")
+
+        # Step 3: Format result
+        if status == "Eligible":
+            embed = discord.Embed(
+                title="✅ Payout Status",
+                description=f"**{username}** is **eligible** for group payouts!\n🎉 Head over to https://discord.com/channels/1334140159012241410/1334535165187326053 to make a purchase",
+                color=discord.Color.green()
+            )
+        elif status == "PayoutRestricted":
+            embed = discord.Embed(
+                title="⚠️ Payout Status",
+                description=f"**{username}** is in the group but is **payout restricted**.\nUser hasn't passed 14 days since join.",
+                color=discord.Color.orange()
+            )
+        elif status == "NotInGroup":
+            embed = discord.Embed(
+                title="❌ Payout Status",
+                description=f"**{username}** is **not in the group**.\nClick [here](https://www.roblox.com/communities/35455005/dont-read-the-groups-description#!/about) to join the group!",
+                color=discord.Color.red()
+            )
+        else:
+            embed = discord.Embed(
+                title="❓ Payout Status",
+                description=f"Could not determine payout status for **{username}**.",
+                color=discord.Color.dark_gray()
+            )
+
+        await loading.edit(content=None, embed=embed)
+
+    except Exception as e:
+        error_embed = discord.Embed(
+            title="❌ Error",
+            description=f"An error occurred while checking **{username}**:\n`{e}`",
+            color=discord.Color.red()
+        )
+        await loading.edit(content=None, embed=error_embed)
 
 @bot.command(aliases=["commands", "cmds"])
 async def help(ctx):
@@ -258,6 +347,12 @@ async def help(ctx):
     embed.add_field(
         name="⏰ !remind",
         value="Sets a **15-day reminder** after you join the required groups to become eligible for Robux.",
+        inline=False
+    )
+    
+    embed.add_field(
+        name="👀 !check <roblox username>",
+        value="Checks if the 2 weeks window have passed for a user to determine if they can make a purchase.",
         inline=False
     )
 
