@@ -50,8 +50,8 @@ async def on_ready():
     print(f"✅ Logged in as {bot.user}")
     
     GUILD_ID = discord.Object(id=1334140159012241410)
-    await bot.tree.sync(guild=1334140159012241410)
-    print("Synced slash commands to main server!")
+    await bot.tree.sync(guild=GUILD_ID)
+    print("Synced slash commands to test server!")
 
 @tree.command(name="price", description="Shows the Robux price chart.")
 async def price(interaction: discord.Interaction):
