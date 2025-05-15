@@ -1,4 +1,3 @@
-
 import discord
 import asyncio
 import math
@@ -42,32 +41,178 @@ async def on_command_error(ctx, error):
     else:
         raise error  # Let other errors bubble up if not handled
 
-def load_reminders():
-    global user_reminders
-    if os.path.isfile(REMINDERS_FILE):
-        with open(REMINDERS_FILE, 'r') as f:
-            data = json.load(f)
-        # convert ISO strings back to datetime
-        user_reminders = {int(uid): datetime.fromisoformat(ts)
-                          for uid, ts in data.items()}
 
-def save_reminders():
-    # convert datetimes to ISO strings
-    data = {str(uid): ts.isoformat() for uid, ts in user_reminders.items()}
-    with open(REMINDERS_FILE, 'w') as f:
-        json.dump(data, f)
+@bot.command()
+async def remind(ctx, roblox_username: str = None, mention: discord.Member = None):
+    with open("reminders.json", "r") as f:
+        reminders = json.load(f)
 
-@bot.event
-async def on_ready():
-    load_reminders()
-    if not save_reminder_task.is_running():
-        save_reminder_task.start()
-    if not check_reminders.is_running():
-        check_reminders.start()
-    print(f'✅ Logged in as {bot.user}')
+    author_id = str(ctx.author.id)
+    allowed_role = 1334531528914370672
+    log_channel = bot.get_channel(1372451862053261422)
 
-def is_restricted(ctx):
-    return ctx.channel.id in restricted_channels
+    # 🔹 Show reminder list if no username is provided
+    if roblox_username is None:
+        target = mention or ctx.author
+        # Restrict access if trying to check others
+        if target != ctx.author and not any(role.id == allowed_role for role in ctx.author.roles):
+            await ctx.send("❌ You don't have permission to view reminders for others.")
+            return
+
+        user_reminders = [v["roblox_username"] for v in reminders.values() if v["discord_id"] == str(target.id)]
+
+        if not user_reminders:
+            await ctx.send(f"📭 No active reminders found for {target.mention}.")
+        else:
+            formatted = "\n".join(f"- `{name}`" for name in user_reminders)
+            embed = discord.Embed(
+                title=f"🔔 Active Reminders for {target.display_name}",
+                description=formatted,
+                color=discord.Color.blurple()
+            )
+            await ctx.send(embed=embed)
+        return
+
+    # Fallback to the command sender if no mention is used
+    if mention is None:
+        mention = ctx.author
+    else:
+        if not any(role.id == allowed_role for role in ctx.author.roles):
+            await ctx.send("❌ You don't have permission to set reminders for others.")
+            return
+
+    discord_id = str(mention.id)
+    roblox_username = roblox_username.strip()
+
+    # Check if this user already has 2 reminders
+    count = sum(1 for v in reminders.values() if v["discord_id"] == discord_id)
+    if count >= 2:
+        await ctx.send("⚠️ You already have 2 active reminders.")
+        return
+
+    try:
+        user = await roblox.get_user_by_username(roblox_username)
+        user_id = str(user.id)
+        proper_username = user.name
+    except:
+        await ctx.send("❌ Could not find that Roblox user.")
+        return
+
+    # Check payout status
+    async with aiohttp.ClientSession() as session:
+        headers = {"Cookie": f".ROBLOSECURITY={os.environ['ROBLOX_TOKEN']}"}
+        payout_url = f"https://economy.roblox.com/v1/groups/{GROUP_ID}/users-payout-eligibility?userIds={user_id}"
+        async with session.get(payout_url, headers=headers) as resp:
+            data = await resp.json()
+            status = data["usersGroupPayoutEligibility"].get(user_id, "Unknown")
+
+    if status == "NotInGroup":
+        await ctx.send(f"❌ **{proper_username}** is not in the group and can't be added.")
+        return
+
+    if status == "Eligible":
+        await ctx.send(f"✅ **{proper_username}** is already eligible to purchase! Head to the store.")
+        return
+
+    if status != "PayoutRestricted":
+        await ctx.send("❓ Could not determine user status.")
+        return
+
+    # Already reminded?
+    if user_id in reminders:
+        await ctx.send("⚠️ A reminder already exists for this Roblox user.")
+        return
+
+    # Save reminder
+    now = datetime.utcnow()
+    reminders[user_id] = {
+        "roblox_username": proper_username,
+        "discord_id": discord_id,
+        "timestamp": now.isoformat()
+    }
+
+    with open("reminders.json", "w") as f:
+        json.dump(reminders, f, indent=2)
+
+    await ctx.send(f"📌 Reminder set! {mention.mention} will be notified when **{proper_username}** becomes eligible. You can ask a support to check logs if you need information.")
+
+    # ✅ Send log embed
+    log_embed = discord.Embed(
+        title="📌 Reminder Created",
+        description=f"Reminder set for **{proper_username}** (`{user_id}`)",
+        color=discord.Color.blurple()
+    )
+    log_embed.add_field(name="Set By", value=f"{ctx.author.mention}", inline=True)
+    log_embed.add_field(name="For", value=f"{mention.mention}", inline=True)
+    log_embed.add_field(name="Time", value=f"<t:{int(now.timestamp())}>", inline=False)
+    await log_channel.send(embed=log_embed)
+
+@tasks.loop(hours=6)
+async def check_reminders():
+    channel = bot.get_channel(1372451862053261422)  # Log channel
+
+    with open("reminders.json", "r") as f:
+        reminders = json.load(f)
+
+    updated = False
+    user_ids = list(reminders.keys())
+
+    for user_id in user_ids:
+        info = reminders[user_id]
+        discord_id = int(info["discord_id"])
+        username = info["roblox_username"]
+        thumbnail_url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
+
+        # Wait 3 minutes between each
+        await asyncio.sleep(180)
+
+        async with aiohttp.ClientSession() as session:
+            headers = {"Cookie": f".ROBLOSECURITY={os.environ['ROBLOX_TOKEN']}"}
+            payout_url = f"https://economy.roblox.com/v1/groups/{GROUP_ID}/users-payout-eligibility?userIds={user_id}"
+            async with session.get(payout_url, headers=headers) as resp:
+                data = await resp.json()
+                status = data["usersGroupPayoutEligibility"].get(user_id, "Unknown")
+
+        user = bot.get_user(discord_id)
+        color = discord.Color.red()
+        title = "❌ Still Not Eligible"
+        description = f"**{username}** is still not eligible for payout."
+
+        if status == "Eligible":
+            # DM the user
+            embed = discord.Embed(
+                title="✅ Payout Eligible!",
+                description=f"Your Roblox account **{username}** is now eligible to purchase Robux in RSBD!\n[Click here to buy now](https://discord.com/channels/1334140159012241410/1334535165187326053)",
+                color=discord.Color.green()
+            )
+            embed.set_thumbnail(url=thumbnail_url)
+
+            try:
+                await user.send(embed=embed)
+            except:
+                await channel.send(f"⚠️ Couldn't DM {user.mention} for **{username}**.")
+
+            # Log
+            color = discord.Color.green()
+            title = "✅ Notified"
+            description = f"**{username}** is now eligible and was notified via DM."
+
+            # Remove from JSON
+            del reminders[user_id]
+            updated = True
+
+        elif status == "NotInGroup":
+            description = f"**{username}** left the group. Removed reminder."
+            del reminders[user_id]
+            updated = True
+
+        log_embed = discord.Embed(title=title, description=description, color=color)
+        await channel.send(embed=log_embed)
+
+    if updated:
+        with open("reminders.json", "w") as f:
+            json.dump(reminders, f, indent=2)
+
 
 @bot.command()
 async def price(ctx):
@@ -108,79 +253,7 @@ async def groups(ctx):
         text="⏳ Stay in the groups for 2 weeks before buying. After joining, use !remind to set your 15-day reminder.")
     await ctx.send(embed=embed)
 
-@bot.command(name="remind")
-async def remindme(ctx):
-    if is_restricted(ctx):
-        response = await ctx.send("❌ This command cannot be used in this channel.")
-        await asyncio.sleep(5)
-        await ctx.message.delete()
-        await response.delete()
-        return
 
-    user_id = ctx.author.id
-    now = datetime.utcnow()
-
-    if user_id in user_reminders:
-        joined_date = user_reminders[user_id]
-        days_passed = (now - joined_date).days
-        days_remaining = max(0, 15 - days_passed)
-        dm_date = (joined_date + timedelta(days=15)).strftime('%B %d, %Y')
-        await ctx.send(
-            f"🔸 You are {days_remaining} days away from being eligible if you joined on {joined_date.strftime('%B %d, %Y')}. You will be DMed on {dm_date}."
-        )
-    else:
-        user_reminders[user_id] = now
-        save_reminders()
-        await ctx.send("✅ **You will be DMed by the bot after 15 days to remind you!**")
-
-@tasks.loop(minutes=60)
-async def check_reminders():
-    now = datetime.utcnow()
-    to_remove = []
-    for user_id, remind_time in user_reminders.items():
-        if now - remind_time >= timedelta(days=15):
-            user = await bot.fetch_user(user_id)
-            try:
-                await user.send(
-                    "📩 You should be eligible for a robux purchase now in RSBD! Open a ticket at https://discord.com/channels/1334140159012241410/1334535165187326053 to buy."
-                )
-            except:
-                pass
-            to_remove.append(user_id)
-    for uid in to_remove:
-        del user_reminders[uid]
-    if to_remove:
-        save_reminders()
-
-@tasks.loop(minutes=10)
-async def save_reminder_task():
-    save_reminders()
-
-@bot.command(name="setremind")
-@commands.has_role(1334531528914370672)
-async def setremind(ctx, member: discord.Member):
-    if is_restricted(ctx):
-        response = await ctx.send("❌ This command cannot be used in this channel.")
-        await asyncio.sleep(5)
-        await ctx.message.delete()
-        await response.delete()
-        return
-
-    user_id = member.id
-    now = datetime.utcnow()
-
-    if user_id in user_reminders:
-        joined_date = user_reminders[user_id]
-        days_passed = (now - joined_date).days
-        days_remaining = max(0, 15 - days_passed)
-        dm_date = (joined_date + timedelta(days=15)).strftime('%B %d, %Y')
-        await ctx.send(
-            f"{member.mention} 🔸 You are {days_remaining} days away if you joined on {joined_date.strftime('%B %d, %Y')}. You will be DMed on {dm_date}."
-        )
-    else:
-        user_reminders[user_id] = now
-        save_reminders()
-        await ctx.send(f"{member.mention} ✅ **will be DMed after 15 days to remind them about the purchase!**")
 
 @bot.command()
 async def convert(ctx, *, input: str):
@@ -351,8 +424,8 @@ async def help(ctx):
     )
 
     embed.add_field(
-        name="⏰ !remind",
-        value="Sets a **15-day reminder** after you join the required groups to become eligible for Robux.",
+        name="⏰ !remind <roblox username>",
+        value="If the user is in group but not eligible, it will add a reminder and the bot will check every few hours to notify you in DMs when the user is eligible for a payout. Leave username empty to see your active reminders.",
         inline=False
     )
     
@@ -364,6 +437,18 @@ async def help(ctx):
 
     embed.set_footer(text="Note: Some commands are restricted to specific channels or roles.")
     await ctx.send(embed=embed)
+
+@bot.event
+async def on_ready():
+    load_reminders()
+    if not save_reminder_task.is_running():
+        save_reminder_task.start()
+    if not check_reminders.is_running():
+        check_reminders.start()
+    print(f'✅ Logged in as {bot.user}')
+
+def is_restricted(ctx):
+    return ctx.channel.id in restricted_channels
 
 # Keep Alive
 app = Flask('')
