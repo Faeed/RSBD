@@ -18,14 +18,14 @@ intents.members = True  # For welcome messages
 roblox = Client(os.environ['ROBLOX_TOKEN'])  # Secure this in production!
 GROUP_ID = 35455005 
 
+REMINDER_CHANNEL_ID = 1372592046048542760  # "Database" channel
+LOG_CHANNEL_ID = 1372451862053261422       # Log channel
+ALLOWED_ROLE_ID = 1334531528914370672      # Admin/Manager role
+
 bot = commands.Bot(command_prefix='!', intents=intents, help_command=None)
-user_reminders = {}
 
 # Channels where commands should not work
 restricted_channels = [1334140159641255981, 1370660850712580106]
-
-# File path for persistence
-REMINDERS_FILE = 'reminders.json'
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -41,129 +41,146 @@ async def on_command_error(ctx, error):
     else:
         raise error  # Let other errors bubble up if not handled
 
+async def fetch_reminders_for_discord_id(discord_id: str):
+    channel = bot.get_channel(REMINDER_CHANNEL_ID)
+    messages = await channel.history(limit=100).flatten()
+    reminders = []
+    for msg in messages:
+        if msg.content.startswith("REMINDER_DATA:"):
+            try:
+                data = json.loads(msg.content.split("REMINDER_DATA:")[1])
+                if data.get("discord_id") == discord_id:
+                    reminders.append(data)
+            except:
+                continue
+    return reminders
 
 @bot.command()
 async def remind(ctx, roblox_username: str = None, mention: discord.Member = None):
-    with open("reminders.json", "r") as f:
-        reminders = json.load(f)
+    reminder_channel = bot.get_channel(REMINDER_CHANNEL_ID)
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    author = ctx.author
+    author_id = str(author.id)
 
-    author_id = str(ctx.author.id)
-    allowed_role = 1334531528914370672
-    log_channel = bot.get_channel(1372451862053261422)
+    def has_allowed_role(member):
+        return any(role.id == ALLOWED_ROLE_ID for role in member.roles)
 
-    # 🔹 Show reminder list if no username is provided
+    # No username = list own reminders
     if roblox_username is None:
-        target = mention or ctx.author
-        # Restrict access if trying to check others
-        if target != ctx.author and not any(role.id == allowed_role for role in ctx.author.roles):
-            await ctx.send("❌ You don't have permission to view reminders for others.")
+        reminders = await fetch_reminders_for_discord_id(author_id)
+        if not reminders:
+            await ctx.send("📭 You have **no active reminders.**")
             return
-
-        user_reminders = [v["roblox_username"] for v in reminders.values() if v["discord_id"] == str(target.id)]
-
-        if not user_reminders:
-            await ctx.send(f"📭 No active reminders found for {target.mention}.")
-        else:
-            formatted = "\n".join(f"- `{name}`" for name in user_reminders)
-            embed = discord.Embed(
-                title=f"🔔 Active Reminders for {target.display_name}",
-                description=formatted,
-                color=discord.Color.blurple()
-            )
-            await ctx.send(embed=embed)
+        embed = discord.Embed(title="🔔 Your Active Reminders", color=discord.Color.blurple())
+        for r in reminders:
+            embed.add_field(name=r["roblox_username"], value=f"Added: <t:{r['timestamp']}:R>", inline=False)
+        await ctx.send(embed=embed)
         return
 
-    # Fallback to the command sender if no mention is used
+    # Admin-only "list" feature
+    if roblox_username.lower() == "list" and mention:
+        if not has_allowed_role(author):
+            await ctx.send("❌ You don't have permission to use this.")
+            return
+        target_id = str(mention.id)
+        reminders = await fetch_reminders_for_discord_id(target_id)
+        if not reminders:
+            await ctx.send(f"📭 No reminders for {mention.mention}.")
+            return
+        embed = discord.Embed(title=f"📋 Reminders for {mention.display_name}", color=discord.Color.blurple())
+        for r in reminders:
+            embed.add_field(name=r["roblox_username"], value=f"Added: <t:{r['timestamp']}:R>", inline=False)
+        await ctx.send(embed=embed)
+        return
+
+    # Fallback to sender if no mention
     if mention is None:
         mention = ctx.author
-    else:
-        if not any(role.id == allowed_role for role in ctx.author.roles):
-            await ctx.send("❌ You don't have permission to set reminders for others.")
-            return
 
     discord_id = str(mention.id)
-    roblox_username = roblox_username.strip()
 
-    # Check if this user already has 2 reminders
-    count = sum(1 for v in reminders.values() if v["discord_id"] == discord_id)
-    if count >= 2:
-        await ctx.send("⚠️ You already have 2 active reminders.")
-        return
-
+    # Check Roblox username
     try:
-        user = await roblox.get_user_by_username(roblox_username)
-        user_id = str(user.id)
-        proper_username = user.name
+        roblox_user = await roblox.get_user_by_username(roblox_username)
+        roblox_id = str(roblox_user.id)
+        roblox_username = roblox_user.name
     except:
-        await ctx.send("❌ Could not find that Roblox user.")
+        await ctx.send("❌ Could not find that Roblox user. Please provide correct username.")
         return
 
-    # Check payout status
+    # Check payout eligibility
     async with aiohttp.ClientSession() as session:
         headers = {"Cookie": f".ROBLOSECURITY={os.environ['ROBLOX_TOKEN']}"}
-        payout_url = f"https://economy.roblox.com/v1/groups/{GROUP_ID}/users-payout-eligibility?userIds={user_id}"
-        async with session.get(payout_url, headers=headers) as resp:
+        url = f"https://economy.roblox.com/v1/groups/{GROUP_ID}/users-payout-eligibility?userIds={roblox_id}"
+        async with session.get(url, headers=headers) as resp:
             data = await resp.json()
-            status = data["usersGroupPayoutEligibility"].get(user_id, "Unknown")
+            status = data["usersGroupPayoutEligibility"].get(roblox_id, "Unknown")
 
     if status == "NotInGroup":
-        await ctx.send(f"❌ **{proper_username}** is not in the group and can't be added.")
+        await ctx.send(f"❌ **{roblox_username}** is **not in the group**, so a reminder cannot be added.")
         return
-
     if status == "Eligible":
-        await ctx.send(f"✅ **{proper_username}** is already eligible to purchase! Head to the store.")
+        await ctx.send(f"✅ **{roblox_username}** is already **eligible**! Go & make a purchase from <1334535165187326053>")
         return
-
     if status != "PayoutRestricted":
-        await ctx.send("❓ Could not determine user status.")
+        await ctx.send("❓ Unable to determine payout status.")
         return
 
-    # Already reminded?
-    if user_id in reminders:
-        await ctx.send("⚠️ A reminder already exists for this Roblox user.")
+    # Check existing reminders for this Discord user
+    existing = await fetch_reminders_for_discord_id(discord_id)
+    if not has_allowed_role(ctx.author) and len(existing) >= 2:
+        await ctx.send("⚠️ You already have 2 active reminders.")
+        return
+    if any(r["roblox_id"] == roblox_id for r in existing) and not has_allowed_role(ctx.author):
+        await ctx.send("⚠️ You already set a reminder for this Roblox user.")
         return
 
-    # Save reminder
-    now = datetime.utcnow()
-    reminders[user_id] = {
-        "roblox_username": proper_username,
+    # Add reminder as message
+    timestamp = int(datetime.utcnow().timestamp())
+    payload = {
+        "roblox_id": roblox_id,
+        "roblox_username": roblox_username,
         "discord_id": discord_id,
-        "timestamp": now.isoformat()
+        "timestamp": timestamp
     }
+    await reminder_channel.send(f"REMINDER_DATA:{json.dumps(payload)}")
 
-    with open("reminders.json", "w") as f:
-        json.dump(reminders, f, indent=2)
+    await ctx.send(f"📌 Reminder set! {mention.mention} will be notified when **{roblox_username}** is eligible.")
 
-    await ctx.send(f"📌 Reminder set! {mention.mention} will be notified when **{proper_username}** becomes eligible. You can ask a support to check logs if you need information.")
-
-    # ✅ Send log embed
-    log_embed = discord.Embed(
-        title="📌 Reminder Created",
-        description=f"Reminder set for **{proper_username}** (`{user_id}`)",
-        color=discord.Color.blurple()
+    # Log
+    embed = discord.Embed(
+        title="📌 Reminder Added",
+        description=f"{mention.mention} added a reminder for **{roblox_username}**",
+        color=discord.Color.orange()
     )
-    log_embed.add_field(name="Set By", value=f"{ctx.author.mention}", inline=True)
-    log_embed.add_field(name="For", value=f"{mention.mention}", inline=True)
-    log_embed.add_field(name="Time", value=f"<t:{int(now.timestamp())}>", inline=False)
-    await log_channel.send(embed=log_embed)
+    await log_channel.send(embed=embed)
+
 
 @tasks.loop(hours=6)
 async def check_reminders():
-    channel = bot.get_channel(1372451862053261422)  # Log channel
+    REMINDER_PREFIX = "REMINDER_DATA:"
 
-    with open("reminders.json", "r") as f:
-        reminders = json.load(f)
+    if not REMINDER_CHANNEL_ID or not LOG_CHANNEL_ID:
+        print("⚠️ One of the channels could not be fetched.")
+        return
 
-    updated = False
-    user_ids = list(reminders.keys())
+    messages = await REMINDER_CHANNEL_ID.history(limit=100).flatten()
+    reminders = []
 
-    for user_id in user_ids:
-        info = reminders[user_id]
-        discord_id = int(info["discord_id"])
-        username = info["roblox_username"]
+    for msg in messages:
+        if msg.content.startswith(REMINDER_PREFIX):
+            try:
+                data = json.loads(msg.content[len(REMINDER_PREFIX):])
+                reminders.append((data, msg))
+            except:
+                continue
+
+    for reminder, msg in reminders:
+        user_id = reminder["roblox_id"]
+        discord_id = int(reminder["discord_id"])
+        username = reminder["roblox_username"]
         thumbnail_url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=150x150&format=Png&isCircular=false"
 
-        # Wait 3 minutes between each
         await asyncio.sleep(180)
 
         async with aiohttp.ClientSession() as session:
@@ -176,10 +193,9 @@ async def check_reminders():
         user = bot.get_user(discord_id)
         color = discord.Color.red()
         title = "❌ Still Not Eligible"
-        description = f"**{username}** is still not eligible for payout."
+        description = f"**{username}** ({discord_id}) is still not eligible for payout."
 
         if status == "Eligible":
-            # DM the user
             embed = discord.Embed(
                 title="✅ Payout Eligible!",
                 description=f"Your Roblox account **{username}** is now eligible to purchase Robux in RSBD!\n[Click here to buy now](https://discord.com/channels/1334140159012241410/1334535165187326053)",
@@ -190,29 +206,20 @@ async def check_reminders():
             try:
                 await user.send(embed=embed)
             except:
-                await channel.send(f"⚠️ Couldn't DM {user.mention} for **{username}**.")
+                await LOG_CHANNEL_ID.send(f"⚠️ Couldn't DM <@{discord_id}> for **{username}**.")
 
-            # Log
             color = discord.Color.green()
             title = "✅ Notified"
-            description = f"**{username}** is now eligible and was notified via DM."
+            description = f"**{username}** ({discord_id}) is now eligible and was notified via DM."
 
-            # Remove from JSON
-            del reminders[user_id]
-            updated = True
+            await msg.delete()
 
         elif status == "NotInGroup":
             description = f"**{username}** left the group. Removed reminder."
-            del reminders[user_id]
-            updated = True
+            await msg.delete()
 
         log_embed = discord.Embed(title=title, description=description, color=color)
-        await channel.send(embed=log_embed)
-
-    if updated:
-        with open("reminders.json", "w") as f:
-            json.dump(reminders, f, indent=2)
-
+        await LOG_CHANNEL_ID.send(embed=log_embed)
 
 @bot.command()
 async def price(ctx):
