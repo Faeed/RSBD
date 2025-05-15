@@ -171,6 +171,7 @@ async def check_reminders():
     messages = []
     async for msg in db_channel.history(limit=100):
         messages.append(msg)
+        
     reminders = []
 
     for msg in messages:
@@ -199,7 +200,7 @@ async def check_reminders():
         user = bot.get_user(discord_id)
         color = discord.Color.red()
         title = "❌ Still Not Eligible"
-        description = f"**{username}** ({discord_id}) is still not eligible for payout."
+        description = f"**{username}** (<@{discord_id}>) is still not eligible for payout."
 
         if status == "Eligible":
             embed = discord.Embed(
@@ -216,7 +217,7 @@ async def check_reminders():
 
             color = discord.Color.green()
             title = "✅ Notified"
-            description = f"**{username}** ({discord_id}) is now eligible and was notified via DM."
+            description = f"**{username}** (<@{discord_id}>) is now eligible and was notified via DM."
 
             await msg.delete()
 
