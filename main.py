@@ -158,13 +158,15 @@ async def remind(ctx, roblox_username: str = None, mention: discord.Member = Non
 
 @tasks.loop(hours=6)
 async def check_reminders():
+    log_channel = bot.get_channel(LOG_CHANNEL_ID)
+    db_channel = bot.get_channel(REMINDER_CHANNEL_ID)
     REMINDER_PREFIX = "REMINDER_DATA:"
 
-    if not REMINDER_CHANNEL_ID or not LOG_CHANNEL_ID:
+    if not db_channel or not log_channel:
         print("⚠️ One of the channels could not be fetched.")
         return
 
-    messages = await REMINDER_CHANNEL_ID.history(limit=100).flatten()
+    messages = await db_channel.history(limit=100).flatten()
     reminders = []
 
     for msg in messages:
@@ -206,7 +208,7 @@ async def check_reminders():
             try:
                 await user.send(embed=embed)
             except:
-                await LOG_CHANNEL_ID.send(f"⚠️ Couldn't DM <@{discord_id}> for **{username}**.")
+                await log_channel.send(f"⚠️ Couldn't DM <@{discord_id}> for **{username}**.")
 
             color = discord.Color.green()
             title = "✅ Notified"
@@ -219,7 +221,9 @@ async def check_reminders():
             await msg.delete()
 
         log_embed = discord.Embed(title=title, description=description, color=color)
-        await LOG_CHANNEL_ID.send(embed=log_embed)
+        await log_channel.send(embed=log_embed)
+
+
 
 @bot.command()
 async def price(ctx):
