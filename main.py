@@ -43,7 +43,9 @@ async def on_command_error(ctx, error):
 
 async def fetch_reminders_for_discord_id(discord_id: str):
     channel = bot.get_channel(REMINDER_CHANNEL_ID)
-    messages = await channel.history(limit=100).flatten()
+    messages = []
+    async for msg in channel.history(limit=100):
+        messages.append(msg)
     reminders = []
     for msg in messages:
         if msg.content.startswith("REMINDER_DATA:"):
@@ -166,7 +168,9 @@ async def check_reminders():
         print("⚠️ One of the channels could not be fetched.")
         return
 
-    messages = await db_channel.history(limit=100).flatten()
+    messages = []
+    async for msg in db_channel.history(limit=100):
+        messages.append(msg)
     reminders = []
 
     for msg in messages:
