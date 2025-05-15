@@ -440,11 +440,10 @@ async def help(ctx):
 
 @bot.event
 async def on_ready():
-    load_reminders()
-    if not save_reminder_task.is_running():
-        save_reminder_task.start()
+
     if not check_reminders.is_running():
         check_reminders.start()
+        
     print(f'✅ Logged in as {bot.user}')
 
 def is_restricted(ctx):
