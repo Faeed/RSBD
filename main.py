@@ -122,7 +122,7 @@ async def remind(ctx, roblox_username: str = None, mention: discord.Member = Non
         await ctx.send(f"❌ **{roblox_username}** is **not in the group**, so a reminder cannot be added.")
         return
     if status == "Eligible":
-        await ctx.send(f"✅ **{roblox_username}** is already **eligible**! Go & make a purchase from <1334535165187326053>")
+        await ctx.send(f"✅ **{roblox_username}** is already **eligible**! Go & make a purchase from https://discord.com/channels/1334140159012241410/1334535165187326053")
         return
     if status != "PayoutRestricted":
         await ctx.send("❓ Unable to determine payout status.")
